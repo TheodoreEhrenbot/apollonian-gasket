@@ -1,9 +1,21 @@
-module Main exposing (main)
+module Main exposing
+    ( Circle
+    , Complex
+    , buildInitialConfig
+    , cAbs
+    , cSub
+    , descartesCurvature
+    , descartesCenter
+    , generateGasket
+    , inverseCircle
+    , symmetricConfig
+    , main
+    )
 
 import Browser
 import Dict exposing (Dict)
-import Html exposing (Html, button, div, h1, p, span, text)
-import Html.Attributes exposing (class, style)
+import Html exposing (Html, button, div, h1, p, text)
+import Html.Attributes exposing (style)
 import Html.Events exposing (onClick)
 import Random exposing (Generator)
 import Svg exposing (circle, svg)
@@ -81,6 +93,7 @@ cSqrt c =
 
 
 -- Given 3 curvatures, find the 4th (both solutions)
+-- Returns (k4a, k4b) where k4a = k1+k2+k3 + 2√(k1k2+k2k3+k3k1)
 descartesCurvature : Float -> Float -> Float -> ( Float, Float )
 descartesCurvature k1 k2 k3 =
     let
@@ -92,7 +105,7 @@ descartesCurvature k1 k2 k3 =
 
 
 -- Complex Descartes for center, given 4 curvatures and 3 centers
--- z4 = (k1z1 + k2z2 + k3z3 ± 2√(k1k2z1z2 + k2k3z2z3 + k3k1z3z1)) / k4
+-- k4*z4 = k1z1 + k2z2 + k3z3 ± 2√(k1k2z1z2 + k2k3z2z3 + k3k1z3z1)
 descartesCenter : Circle -> Circle -> Circle -> Float -> ( Complex, Complex )
 descartesCenter c1 c2 c3 k4 =
     let
@@ -114,9 +127,10 @@ descartesCenter c1 c2 c3 k4 =
     ( z4plus, z4minus )
 
 
--- When we already know c4, find the "other" circle tangent to c1,c2,c3
--- Uses the inversion formula: k_new = 2(k1+k2+k3) - k4
--- z_new = (2*(k1z1+k2z2+k3z3) - k4*z4) / k_new
+-- Apollonian inversion: given 4 mutually tangent circles (c1,c2,c3,c4),
+-- find the other circle tangent to c1,c2,c3 (the Descartes partner of c4).
+-- k_new = 2(k1+k2+k3) - k4
+-- k_new * z_new = 2(k1z1+k2z2+k3z3) - k4*z4
 inverseCircle : Circle -> Circle -> Circle -> Circle -> Maybe Circle
 inverseCircle c1 c2 c3 c4 =
     let
@@ -127,8 +141,9 @@ inverseCircle c1 c2 c3 c4 =
         sumKZ = t1 |> cAdd t2 |> cAdd t3
         numerator = cSub (cScale 2 sumKZ) (cScale c4.k c4.z)
         zNew = cScale (1 / kNew) numerator
+        minRadius = 0.0005
     in
-    if kNew > 0 && (1 / kNew) > 0.001 then
+    if kNew > 0 && (1 / kNew) > minRadius then
         Just { k = kNew, z = zNew, depth = 1 + (List.minimum [ c1.depth, c2.depth, c3.depth ] |> Maybe.withDefault 0) }
     else
         Nothing
@@ -178,7 +193,7 @@ generateGasket outer c1 c2 c3 =
 
 processQueue : List QueueItem -> Dict String Bool -> List Circle -> Int -> List Circle
 processQueue queue seen circles count =
-    if count > 5000 || List.isEmpty queue then
+    if count > 20000 || List.isEmpty queue then
         circles
     else
         case queue of
@@ -216,7 +231,6 @@ type alias Quadruple =
     { outer : Circle, c1 : Circle, c2 : Circle, c3 : Circle }
 
 
--- Generate 3 mutually tangent circles with random radii, then find the enclosing circle
 randomRadii : Generator ( Float, Float, Float )
 randomRadii =
     Random.map3
@@ -236,7 +250,6 @@ randomRadii =
 buildInitialConfig : ( Float, Float, Float ) -> Maybe Quadruple
 buildInitialConfig ( r1, r2, r3 ) =
     let
-        -- Place c1 at origin, c2 to the right
         k1 = 1 / r1
         k2 = 1 / r2
         k3 = 1 / r3
@@ -244,12 +257,10 @@ buildInitialConfig ( r1, r2, r3 ) =
         z1 = { re = 0, im = 0 }
         z2 = { re = r1 + r2, im = 0 }
 
-        -- c3 position: tangent to c1 and c2
         d12 = r1 + r2
         d13 = r1 + r3
         d23 = r2 + r3
 
-        -- Intersection of two circles: |z3 - z1| = d13, |z3 - z2| = d23
         x3 = (d13 * d13 - d23 * d23 + d12 * d12) / (2 * d12)
         y3sq = d13 * d13 - x3 * x3
     in
@@ -264,16 +275,11 @@ buildInitialConfig ( r1, r2, r3 ) =
             c2 = Circle k2 z2 0
             c3 = Circle k3 z3 0
 
-            -- Outer enclosing circle: negative curvature solution
-            ( kOuterPos, kOuterNeg ) = descartesCurvature k1 k2 k3
-
-            -- We want the enclosing circle: smaller curvature (more negative)
+            ( _, kOuterNeg ) = descartesCurvature k1 k2 k3
             kOuter = kOuterNeg
 
-            -- Find center using complex Descartes
             ( zOuterA, zOuterB ) = descartesCenter c1 c2 c3 kOuter
 
-            -- Pick the center closer to the centroid of the 3 inner circles
             centroid =
                 { re = (z1.re + z2.re + z3.re) / 3
                 , im = (z1.im + z2.im + z3.im) / 3
@@ -285,9 +291,8 @@ buildInitialConfig ( r1, r2, r3 ) =
                 else
                     zOuterB
 
-            outer = Circle kOuter zOuter 0
-
-            -- Normalize: translate so outer is at origin, scale so outer radius = 1
+            -- rOuter = 1/|kOuter|; normalize so outer radius = 1
+            -- Scaling by 1/rOuter: coordinates divide by rOuter, curvatures multiply by rOuter
             rOuter = abs (1 / kOuter)
             cx = zOuter.re
             cy = zOuter.im
@@ -295,18 +300,20 @@ buildInitialConfig ( r1, r2, r3 ) =
             translate z = { re = (z.re - cx) / rOuter, im = (z.im - cy) / rOuter }
 
             normalizedOuter = { outer | z = { re = 0, im = 0 }, k = -1 }
-            normalized1 = { c1 | z = translate z1, k = k1 / rOuter }
-            normalized2 = { c2 | z = translate z2, k = k2 / rOuter }
-            normalized3 = { c3 | z = translate z3, k = k3 / rOuter }
+            normalized1 = { c1 | z = translate z1, k = k1 * rOuter }
+            normalized2 = { c2 | z = translate z2, k = k2 * rOuter }
+            normalized3 = { c3 | z = translate z3, k = k3 * rOuter }
+
+            outer = Circle kOuter zOuter 0
         in
         Just { outer = normalizedOuter, c1 = normalized1, c2 = normalized2, c3 = normalized3 }
 
 
--- Fallback: a known-good symmetric configuration
+-- Fallback: symmetric config with three equal circles inscribed in unit disk
+-- r = 2√3 - 3 ≈ 0.4641, centers at distance 1-r from origin
 symmetricConfig : Quadruple
 symmetricConfig =
     let
-        -- Three equal circles in unit disk: r = 2*sqrt(3)-3 ≈ 0.4641
         r = 2 * sqrt 3 - 3
         k = 1 / r
         d = 1 - r
@@ -327,23 +334,6 @@ buildCircles radii =
     generateGasket q.outer q.c1 q.c2 q.c3
 
 
--- COLOR
--- Color by log curvature: large circles (low k) are warm, tiny circles (high k) are cool
-
-
-curvatureColor : Float -> String
-curvatureColor k =
-    let
-        -- log scale: k=1 (r=1) is warm, k=1000 (r=0.001) is cool
-        t = clamp 0 1 (logBase 10 (max 1 k) / 3)
-        -- hue: 30 (orange) to 260 (blue-violet)
-        hue = round (30 + t * 230)
-        sat = round (80 - t * 20)
-        light = round (60 - t * 20)
-    in
-    "hsl(" ++ String.fromInt hue ++ "," ++ String.fromInt sat ++ "%," ++ String.fromInt light ++ "%)"
-
-
 -- SVG RENDERING
 
 
@@ -359,7 +349,6 @@ viewRadius : Float
 viewRadius = 320
 
 
--- Convert from normalized coords (outer circle at origin, radius 1) to SVG coords
 toSvgX : Float -> Float
 toSvgX x =
     viewWidth / 2 + x * viewRadius
@@ -377,7 +366,6 @@ renderCircle c =
         cx = toSvgX c.z.re
         cy = toSvgY c.z.im
         svgR = r * viewRadius
-        col = curvatureColor (abs c.k)
     in
     if svgR < 0.3 then
         Svg.text_ [] []
@@ -386,10 +374,9 @@ renderCircle c =
             [ SA.cx (String.fromFloat cx)
             , SA.cy (String.fromFloat cy)
             , SA.r (String.fromFloat svgR)
-            , SA.fill col
-            , SA.fillOpacity "0.7"
-            , SA.stroke "rgba(0,0,0,0.15)"
-            , SA.strokeWidth (String.fromFloat (max 0.2 (svgR * 0.02)))
+            , SA.fill "white"
+            , SA.stroke "black"
+            , SA.strokeWidth (String.fromFloat (max 0.3 (svgR * 0.015)))
             ]
             []
 
@@ -398,25 +385,24 @@ view : Model -> Html Msg
 view model =
     div
         [ style "font-family" "Georgia, serif"
-        , style "background" "#0a0a12"
+        , style "background" "white"
         , style "min-height" "100vh"
         , style "display" "flex"
         , style "flex-direction" "column"
         , style "align-items" "center"
         , style "padding" "24px"
-        , style "color" "#e8e0ff"
+        , style "color" "#111"
         ]
         [ h1
             [ style "font-size" "2rem"
             , style "margin" "0 0 4px 0"
             , style "letter-spacing" "0.08em"
-            , style "color" "#c8b8ff"
             ]
             [ text "Apollonian Gasket" ]
         , p
             [ style "margin" "0 0 16px 0"
             , style "font-size" "0.9rem"
-            , style "color" "#888"
+            , style "color" "#555"
             , style "font-style" "italic"
             ]
             [ text (String.fromInt (List.length model.circles) ++ " circles · fractal of tangent circles") ]
@@ -424,10 +410,13 @@ view model =
             [ SA.width (String.fromFloat viewWidth)
             , SA.height (String.fromFloat viewHeight)
             , SA.viewBox ("0 0 " ++ String.fromFloat viewWidth ++ " " ++ String.fromFloat viewHeight)
-            , style "border-radius" "8px"
-            , style "background" "#050508"
+            , style "border" "1px solid #ccc"
+            , style "border-radius" "4px"
+            , style "background" "white"
             ]
-            (List.sortBy (\c -> -(1 / c.k)) model.circles
+            -- Sort by descending radius so large circles (including outer) render first
+            (List.sortBy (\c -> 1 / abs c.k) model.circles
+                |> List.reverse
                 |> List.map renderCircle
             )
         , button
@@ -436,9 +425,9 @@ view model =
             , style "padding" "10px 32px"
             , style "font-size" "1rem"
             , style "font-family" "Georgia, serif"
-            , style "background" "#2a1a4a"
-            , style "color" "#c8b8ff"
-            , style "border" "1px solid #6040a0"
+            , style "background" "white"
+            , style "color" "#111"
+            , style "border" "1px solid #999"
             , style "border-radius" "6px"
             , style "cursor" "pointer"
             , style "letter-spacing" "0.06em"

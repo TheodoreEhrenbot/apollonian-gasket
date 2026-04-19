@@ -10,3 +10,7 @@ __pycache__/
 state.json
 CLAUDE.md
 CLAUDE.local.md
+
+# Build output and tooling
+elm.js
+node_modules/
